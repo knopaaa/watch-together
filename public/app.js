@@ -192,12 +192,12 @@ function createYouTube(videoId, { time = 0, playing = false } = {}) {
   div.style.width = '100%';
   div.style.height = '100%';
   playerContainer.appendChild(div);
- 
+
   if (!window.YT) {
     setTimeout(() => createYouTube(videoId, { time, playing }), 500);
     return;
   }
-  
+
   ytPlayer = new YT.Player('ytPlayer', {
     videoId,
     playerVars: { rel: 0, modestbranding: 1, playsinline: 1 },
@@ -210,6 +210,10 @@ function createYouTube(videoId, { time = 0, playing = false } = {}) {
       onStateChange: (e) => {
         if (suppressSync) return;
         const st = e.data;
+        
+        // Если это реклама (состояние 5 или 3), МЫ НЕ ОТПРАВЛЯЕМ время, чтобы не сбить других
+        if (st === 3 || st === 5) return; 
+        
         if (st === YT.PlayerState.PLAYING || st === YT.PlayerState.PAUSED) {
           sendSync({ time: e.target.getCurrentTime(), playing: st === YT.PlayerState.PLAYING });
         }
@@ -281,18 +285,21 @@ function onVkMessage(e) {
 
     case 'started':
     case 'resumed':
-      if (suppressSync) return;
+      // Игнорируем, если открыта реклама
+      if (suppressSync || data.ad) return; 
       sendSync({ time: data.time ?? 0, playing: true });
       break;
 
     case 'paused':
-      if (suppressSync) return;
+      // ВК иногда ставит на паузу для показа рекламы. Проверяем, не реклама ли это.
+      if (suppressSync || data.ad) return;
       sendSync({ time: data.time ?? 0, playing: false });
       break;
 
     case 'timeupdate': {
-      if (suppressSync) return;
+      if (suppressSync || data.ad) return;
       const now = Date.now();
+      // Отправляем раз в 3 секунды, чтобы постоянно не спамить сервер
       if (now - vkLastSent > 3000) {
         vkLastSent = now;
         sendSync({ time: data.time ?? 0, playing: true });
@@ -307,9 +314,15 @@ function applyVkSync({ time, playing }) {
     pendingVkSync = { time, playing };
     return;
   }
-  if (typeof time === 'number') vkPost('seek', { time });
-  if (playing) vkPost('play');
-  else vkPost('pause');
+  // Принудительно перематываем, если отставание больше 2 секунд
+  if (typeof time === 'number') {
+    vkPost('seek', { time });
+  }
+  if (playing) {
+    vkPost('play');
+  } else {
+    vkPost('pause');
+  }
 }
 
 // ---------- FILE / HLS ----------
@@ -419,14 +432,22 @@ function sendSync({ time, playing }) {
 }
 
 function applySync({ time, playing }) {
-  // Если мы сами только что нажали кнопку — не дергаем видео
   if (suppressSync) return; 
-  
-  suppressSync = true; // блокируем отправку события обратно на сервер
+  suppressSync = true;
   
   try {
     if (currentType === 'youtube' && ytPlayer && ytPlayer.seekTo) {
-      if (typeof time === 'number') ytPlayer.seekTo(time, true);
+      // Проверяем, не крутится ли у нас реклама сейчас
+      const state = ytPlayer.getPlayerState();
+      if (state === 3 || state === 5) return; // если реклама — игнорируем
+
+      const currentTime = ytPlayer.getCurrentTime();
+      
+      // Если отставание больше 2 секунд, принудительно перематываем
+      if (typeof time === 'number' && Math.abs(currentTime - time) > 2) {
+        ytPlayer.seekTo(time, true);
+      }
+      
       if (playing) {
         ytPlayer.playVideo();
       } else {
@@ -435,9 +456,11 @@ function applySync({ time, playing }) {
     } else if (currentType === 'vk') {
       applyVkSync({ time, playing });
     } else if (currentType === 'file' && fileVideoEl) {
-      if (typeof time === 'number') fileVideoEl.currentTime = time;
+      const currentTime = fileVideoEl.currentTime;
+      if (typeof time === 'number' && Math.abs(currentTime - time) > 2) {
+         fileVideoEl.currentTime = time;
+      }
       if (playing) {
-        // Если браузер блокирует автоплей, пробуем включить без звука (затем можно включить звук)
         fileVideoEl.play().catch(() => {
            fileVideoEl.muted = true;
            fileVideoEl.play().then(() => { fileVideoEl.muted = false; }).catch(()=>{});
@@ -447,7 +470,6 @@ function applySync({ time, playing }) {
       }
     }
   } finally {
-    // Разблокируем отправку через полсекунды
     setTimeout(() => { suppressSync = false; }, 500);
   }
 }
