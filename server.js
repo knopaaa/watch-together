@@ -83,7 +83,7 @@ io.on('connection', (socket) => {
   });
 
   // ---------- СМЕНА ВИДЕО ----------
-  socket.on('setVideo', (video) => {
+    socket.on('setVideo', (video) => {
     const roomId = socket.data.roomId;
     if (!roomId) return;
     const room = getRoom(roomId);
