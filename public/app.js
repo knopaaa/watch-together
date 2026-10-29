@@ -226,17 +226,21 @@ function createYouTube(videoId, { time = 0, playing = false } = {}) {
 function extractVK(url) {
   try {
     const u = new URL(url);
-    if (u.pathname.includes('video_ext.php')) {
-      u.searchParams.set('js_api', '1');
-      u.searchParams.set('autoplay', '0');
-      return { embedUrl: u.toString() };
-    }
-    const m = u.pathname.match(/\/video(-?\d+)_(\d+)/);
+    
+    // Если ссылка вида https://vk.com/video-123_456
+    const m = u.pathname.match(/\/video(-?\d+)_(\d+)/) || url.match(/video(-?\d+)_(\d+)/);
     if (m) {
       const params = new URLSearchParams({
         oid: m[1], id: m[2], hd: '2', js_api: '1', autoplay: '0'
       });
       return { embedUrl: `https://vk.com/video_ext.php?${params.toString()}` };
+    }
+
+    // Если это уже готовая embed-ссылка
+    if (u.pathname.includes('video_ext.php')) {
+      u.searchParams.set('js_api', '1');
+      u.searchParams.set('autoplay', '0');
+      return { embedUrl: u.toString() };
     }
   } catch {}
   return null;
@@ -283,15 +287,23 @@ function onVkMessage(e) {
       }
       break;
 
+    // Если видео переключили прямо внутри ВК
+    case 'videostart':
+      if (suppressSync) return;
+      // data.videoId содержит ID нового видео, например -123_456
+      if (data.videoId) {
+        const newUrl = `https://vk.com/video${data.videoId}`;
+        socket.emit('setVideo', { type: 'vk', id: null, url: newUrl });
+      }
+      break;
+
     case 'started':
     case 'resumed':
-      // Игнорируем, если открыта реклама
       if (suppressSync || data.ad) return; 
       sendSync({ time: data.time ?? 0, playing: true });
       break;
 
     case 'paused':
-      // ВК иногда ставит на паузу для показа рекламы. Проверяем, не реклама ли это.
       if (suppressSync || data.ad) return;
       sendSync({ time: data.time ?? 0, playing: false });
       break;
@@ -299,7 +311,6 @@ function onVkMessage(e) {
     case 'timeupdate': {
       if (suppressSync || data.ad) return;
       const now = Date.now();
-      // Отправляем раз в 3 секунды, чтобы постоянно не спамить сервер
       if (now - vkLastSent > 3000) {
         vkLastSent = now;
         sendSync({ time: data.time ?? 0, playing: true });
@@ -415,10 +426,11 @@ loadBtn.addEventListener('click', () => {
   }
   const vk = extractVK(url);
   if (vk) {
+    // Передаем embedUrl для ВК
     socket.emit('setVideo', { type: 'vk', id: vk.embedUrl, url });
     return;
   }
-  // иначе — прямой файл (mp4/webm/m3u8)
+  // прямой файл
   socket.emit('setVideo', { type: 'file', id: url, url });
 });
 urlInput.addEventListener('keydown', (e) => e.key === 'Enter' && loadBtn.click());
