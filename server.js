@@ -65,14 +65,16 @@ io.on('connection', (socket) => {
   });
 
   // ---------- СИНХРОНИЗАЦИЯ ПЛЕЕРА ----------
-  socket.on('sync', (data) => {
+    socket.on('sync', (data) => {
     const roomId = socket.data.roomId;
     if (!roomId) return;
     const room = getRoom(roomId);
 
+    // Обновляем время и статус (играет/пауза)
     if (typeof data.time === 'number') room.time = data.time;
     if (typeof data.playing === 'boolean') room.playing = data.playing;
 
+    // Отправляем всем, КРОМЕ того, кто нажал
     socket.to(roomId).emit('sync', {
       time: room.time,
       playing: room.playing,
