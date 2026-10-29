@@ -272,10 +272,11 @@ function onVkMessage(e) {
         pendingVkSync = null;
       }
       break;
-    case 'videostart':
+        case 'videostart':
       if (suppressSync) return;
       if (data.videoId) {
         const newUrl = `https://vk.com/video${data.videoId}`;
+        // Отправляем сброс времени
         socket.emit('setVideo', { type: 'vk', id: null, url: newUrl });
       }
       break;
@@ -408,17 +409,23 @@ function applySync({ time, playing }) {
     if (currentType === 'youtube' && ytPlayer && ytPlayer.seekTo) {
       const state = ytPlayer.getPlayerState();
       if (state === 3 || state === 5) return; 
+
       const currentTime = ytPlayer.getCurrentTime();
-      if (typeof time === 'number' && Math.abs(currentTime - time) > 1.5) {
+      // Если отставание больше 1 секунды, перематываем
+      if (typeof time === 'number' && Math.abs(currentTime - time) > 1) {
         ytPlayer.seekTo(time, true);
       }
-      if (playing) ytPlayer.playVideo();
-      else ytPlayer.pauseVideo();
+      
+      if (playing) {
+        ytPlayer.playVideo();
+      } else {
+        ytPlayer.pauseVideo();
+      }
     } else if (currentType === 'vk') {
       applyVkSync({ time, playing });
     } else if (currentType === 'file' && fileVideoEl) {
       const currentTime = fileVideoEl.currentTime;
-      if (typeof time === 'number' && Math.abs(currentTime - time) > 1.5) {
+      if (typeof time === 'number' && Math.abs(currentTime - time) > 1) {
          fileVideoEl.currentTime = time;
       }
       if (playing) {
@@ -431,7 +438,8 @@ function applySync({ time, playing }) {
       }
     }
   } finally {
-    setTimeout(() => { suppressSync = false; }, 300);
+    // Увеличили время блокировки до 800мс, чтобы плееры успевали прогрузиться
+    setTimeout(() => { suppressSync = false; }, 800);
   }
 }
 
