@@ -1,7 +1,5 @@
 // =============================================================
-//  Watch Together — клиент (v3, с HLS)
-//  Поддержка: YouTube, VK Video (sync), mp4 (sync), m3u8/HLS (sync),
-//             screen-share (WebRTC), чат, реакции, PWA
+//  Watch Together — клиент (v4, стабильная синхронизация)
 // =============================================================
 
 const socket = io();
@@ -20,7 +18,6 @@ const urlInput = $('urlInput');
 const loadBtn = $('loadBtn');
 const playerContainer = $('playerContainer');
 const emptyState = $('emptyState');
-const playerWrap = $('playerWrap');
 const screenVideo = $('screenVideo');
 const messagesEl = $('messages');
 const chatInput = $('chatInput');
@@ -31,14 +28,22 @@ const shareScreenBtn = $('shareScreenBtn');
 const stopScreenBtn = $('stopScreenBtn');
 const emojiLayer = $('emojiLayer');
 
-// ---------- префилл имени и комнаты ----------
-nameInput.value = localStorage.getItem('wt_name') || '';
+// Безопасная работа с localStorage
+function safeGet(key) {
+  try { return localStorage.getItem(key); } catch { return null; }
+}
+function safeSet(key, val) {
+  try { localStorage.setItem(key, val); } catch {}
+}
+
+// префилл
+const savedName = safeGet('wt_name');
+if (savedName) nameInput.value = savedName;
+
 const pathRoom = location.pathname.match(/^\/r\/([^/]+)/);
 if (pathRoom) roomInput.value = decodeURIComponent(pathRoom[1]);
 
-// =============================================================
-//  ДИНАМИЧЕСКАЯ ЗАГРУЗКА hls.js
-// =============================================================
+// ---------- ДИНАМИЧЕСКАЯ ЗАГРУЗКА hls.js ----------
 let hlsLibLoading = null;
 function ensureHlsLib() {
   if (window.Hls) return Promise.resolve(window.Hls);
@@ -60,7 +65,7 @@ function doJoin() {
   if (!name) return alert('Введи имя');
   myName = name;
   myRoom = room;
-  localStorage.setItem('wt_name', name);
+  safeSet('wt_name', name);
   socket.emit('join', { roomId: room, name });
 
   history.replaceState(null, '', '/r/' + encodeURIComponent(room));
@@ -85,7 +90,6 @@ socket.on('users', (users) => {
   });
 });
 
-// ---------- INIT ----------
 socket.on('init', ({ video, time, playing, history }) => {
   if (Array.isArray(history)) {
     messagesEl.innerHTML = '';
@@ -94,10 +98,7 @@ socket.on('init', ({ video, time, playing, history }) => {
   if (video) loadVideo(video, { time, playing, remote: true });
 });
 
-// ---------- СМЕНА ВИДЕО ОТ ДРУГОГО ----------
 socket.on('setVideo', (video) => loadVideo(video, { remote: true }));
-
-// ---------- СИНХРОНИЗАЦИЯ ----------
 socket.on('sync', ({ time, playing }) => applySync({ time, playing }));
 
 // ---------- ЧАТ ----------
@@ -161,7 +162,7 @@ function spawnEmoji(emoji) {
 // =============================================================
 //  ПЛЕЕРЫ
 // =============================================================
-let currentType = null;   // 'youtube' | 'vk' | 'file'
+let currentType = null;
 let ytPlayer = null;
 let vkIframe = null;
 let vkPlayerInited = false;
@@ -170,15 +171,11 @@ let vkLastSent = 0;
 let fileVideoEl = null;
 let hlsInstance = null;
 let suppressSync = false;
-let lastSentTime = 0;
 
-// ---------- YOUTUBE ----------
-window.onYouTubeIframeAPIReady = () => { /* готов */ };
+window.onYouTubeIframeAPIReady = () => {};
 
 function extractYouTubeId(url) {
-  const m = String(url).match(
-    /(?:youtu\.be\/|youtube\.com\/(?:watch\?v=|embed\/|shorts\/|live\/))([\w-]{11})/
-  );
+  const m = String(url).match(/(?:youtu\.be\/|youtube\.com\/(?:watch\?v=|embed\/|shorts\/|live\/))([\w-]{11})/);
   return m ? m[1] : null;
 }
 
@@ -210,10 +207,7 @@ function createYouTube(videoId, { time = 0, playing = false } = {}) {
       onStateChange: (e) => {
         if (suppressSync) return;
         const st = e.data;
-        
-        // Если это реклама (состояние 5 или 3), МЫ НЕ ОТПРАВЛЯЕМ время, чтобы не сбить других
-        if (st === 3 || st === 5) return; 
-        
+        if (st === 3 || st === 5) return; // реклама
         if (st === YT.PlayerState.PLAYING || st === YT.PlayerState.PAUSED) {
           sendSync({ time: e.target.getCurrentTime(), playing: st === YT.PlayerState.PLAYING });
         }
@@ -226,21 +220,15 @@ function createYouTube(videoId, { time = 0, playing = false } = {}) {
 function extractVK(url) {
   try {
     const u = new URL(url);
-    
-    // Если ссылка вида https://vk.com/video-123_456
-    const m = u.pathname.match(/\/video(-?\d+)_(\d+)/) || url.match(/video(-?\d+)_(\d+)/);
-    if (m) {
-      const params = new URLSearchParams({
-        oid: m[1], id: m[2], hd: '2', js_api: '1', autoplay: '0'
-      });
-      return { embedUrl: `https://vk.com/video_ext.php?${params.toString()}` };
-    }
-
-    // Если это уже готовая embed-ссылка
     if (u.pathname.includes('video_ext.php')) {
       u.searchParams.set('js_api', '1');
       u.searchParams.set('autoplay', '0');
       return { embedUrl: u.toString() };
+    }
+    const m = u.pathname.match(/\/video(-?\d+)_(\d+)/) || url.match(/video(-?\d+)_(\d+)/);
+    if (m) {
+      const params = new URLSearchParams({ oid: m[1], id: m[2], hd: '2', js_api: '1', autoplay: '0' });
+      return { embedUrl: `https://vk.com/video_ext.php?${params.toString()}` };
     }
   } catch {}
   return null;
@@ -266,9 +254,7 @@ function createVK(embedUrl, opts = {}) {
 
 function vkPost(method, params = {}) {
   if (!vkIframe || !vkIframe.contentWindow) return;
-  try {
-    vkIframe.contentWindow.postMessage(JSON.stringify({ method, params }), '*');
-  } catch {}
+  try { vkIframe.contentWindow.postMessage(JSON.stringify({ method, params }), '*'); } catch {}
 }
 
 function onVkMessage(e) {
@@ -286,28 +272,22 @@ function onVkMessage(e) {
         pendingVkSync = null;
       }
       break;
-
-    // Если видео переключили прямо внутри ВК
     case 'videostart':
       if (suppressSync) return;
-      // data.videoId содержит ID нового видео, например -123_456
       if (data.videoId) {
         const newUrl = `https://vk.com/video${data.videoId}`;
         socket.emit('setVideo', { type: 'vk', id: null, url: newUrl });
       }
       break;
-
     case 'started':
     case 'resumed':
-      if (suppressSync || data.ad) return; 
+      if (suppressSync || data.ad) return;
       sendSync({ time: data.time ?? 0, playing: true });
       break;
-
     case 'paused':
       if (suppressSync || data.ad) return;
       sendSync({ time: data.time ?? 0, playing: false });
       break;
-
     case 'timeupdate': {
       if (suppressSync || data.ad) return;
       const now = Date.now();
@@ -325,15 +305,9 @@ function applyVkSync({ time, playing }) {
     pendingVkSync = { time, playing };
     return;
   }
-  // Принудительно перематываем, если отставание больше 2 секунд
-  if (typeof time === 'number') {
-    vkPost('seek', { time });
-  }
-  if (playing) {
-    vkPost('play');
-  } else {
-    vkPost('pause');
-  }
+  if (typeof time === 'number') vkPost('seek', { time });
+  if (playing) vkPost('play');
+  else vkPost('pause');
 }
 
 // ---------- FILE / HLS ----------
@@ -353,42 +327,31 @@ function createFile(url, opts = {}) {
   const isHls = /\.m3u8(\?|#|$)/i.test(url);
 
   if (isHls) {
-    // сначала проверим нативную поддержку (Safari / iOS)
     const canNative = fileVideoEl.canPlayType('application/vnd.apple.mpegurl');
     if (canNative) {
       fileVideoEl.src = url;
     } else {
       ensureHlsLib().then((Hls) => {
         if (!Hls || !Hls.isSupported()) {
-          fileVideoEl.src = url; // последняя попытка
+          fileVideoEl.src = url;
           return;
         }
-        hlsInstance = new Hls({
-          maxBufferLength: 30,
-          maxMaxBufferLength: 60,
-          enableWorker: true,
-          lowLatencyMode: false
-        });
+        hlsInstance = new Hls({ maxBufferLength: 30, maxMaxBufferLength: 60, enableWorker: true });
         hlsInstance.loadSource(url);
         hlsInstance.attachMedia(fileVideoEl);
 
         hlsInstance.on(Hls.Events.ERROR, (_, data) => {
-          console.warn('[hls] error', data);
           if (!data.fatal) return;
           if (data.type === Hls.ErrorTypes.NETWORK_ERROR) hlsInstance.startLoad();
           else if (data.type === Hls.ErrorTypes.MEDIA_ERROR) hlsInstance.recoverMediaError();
           else hlsInstance.destroy();
         });
-      }).catch((e) => {
-        console.error('hls.js load failed', e);
-        fileVideoEl.src = url;
-      });
+      }).catch(() => { fileVideoEl.src = url; });
     }
   } else {
     fileVideoEl.src = url;
   }
 
-  // синхронизация
   const send = (playing) => {
     if (suppressSync) return;
     sendSync({ time: fileVideoEl.currentTime, playing });
@@ -407,7 +370,6 @@ function createFile(url, opts = {}) {
   }
 }
 
-// ---------- УНИВЕРСАЛЬНАЯ ЗАГРУЗКА ----------
 function loadVideo(video, opts = {}) {
   const { type, id } = video;
   if (type === 'youtube') createYouTube(id, opts);
@@ -426,50 +388,37 @@ loadBtn.addEventListener('click', () => {
   }
   const vk = extractVK(url);
   if (vk) {
-    // Передаем embedUrl для ВК
     socket.emit('setVideo', { type: 'vk', id: vk.embedUrl, url });
     return;
   }
-  // прямой файл
   socket.emit('setVideo', { type: 'file', id: url, url });
 });
 urlInput.addEventListener('keydown', (e) => e.key === 'Enter' && loadBtn.click());
 
-// ---------- SYNC ----------
+// ---------- СИНХРОНИЗАЦИЯ ----------
 function sendSync({ time, playing }) {
-  const now = Date.now();
-  if (now - lastSentTime < 400) return;
-  lastSentTime = now;
   socket.emit('sync', { time, playing });
 }
 
 function applySync({ time, playing }) {
-  if (suppressSync) return; 
-  suppressSync = true;
+  if (suppressSync) return;
+  suppressSync = true; 
   
   try {
     if (currentType === 'youtube' && ytPlayer && ytPlayer.seekTo) {
-      // Проверяем, не крутится ли у нас реклама сейчас
       const state = ytPlayer.getPlayerState();
-      if (state === 3 || state === 5) return; // если реклама — игнорируем
-
+      if (state === 3 || state === 5) return; 
       const currentTime = ytPlayer.getCurrentTime();
-      
-      // Если отставание больше 2 секунд, принудительно перематываем
-      if (typeof time === 'number' && Math.abs(currentTime - time) > 2) {
+      if (typeof time === 'number' && Math.abs(currentTime - time) > 1.5) {
         ytPlayer.seekTo(time, true);
       }
-      
-      if (playing) {
-        ytPlayer.playVideo();
-      } else {
-        ytPlayer.pauseVideo();
-      }
+      if (playing) ytPlayer.playVideo();
+      else ytPlayer.pauseVideo();
     } else if (currentType === 'vk') {
       applyVkSync({ time, playing });
     } else if (currentType === 'file' && fileVideoEl) {
       const currentTime = fileVideoEl.currentTime;
-      if (typeof time === 'number' && Math.abs(currentTime - time) > 2) {
+      if (typeof time === 'number' && Math.abs(currentTime - time) > 1.5) {
          fileVideoEl.currentTime = time;
       }
       if (playing) {
@@ -482,11 +431,10 @@ function applySync({ time, playing }) {
       }
     }
   } finally {
-    setTimeout(() => { suppressSync = false; }, 500);
+    setTimeout(() => { suppressSync = false; }, 300);
   }
 }
 
-// периодическая коррекция дрейфа
 setInterval(() => {
   if (suppressSync) return;
   if (currentType === 'youtube' && ytPlayer?.getPlayerState) {
@@ -498,7 +446,6 @@ setInterval(() => {
   }
 }, 5000);
 
-// ---------- очистка ----------
 function clearPlayerArea() {
   window.removeEventListener('message', onVkMessage);
   if (ytPlayer?.destroy) { try { ytPlayer.destroy(); } catch {} }
@@ -519,10 +466,7 @@ let localStream = null;
 
 shareScreenBtn.addEventListener('click', async () => {
   try {
-    localStream = await navigator.mediaDevices.getDisplayMedia({
-      video: { frameRate: { ideal: 30 } },
-      audio: true
-    });
+    localStream = await navigator.mediaDevices.getDisplayMedia({ video: { frameRate: { ideal: 30 } }, audio: true });
     screenVideo.srcObject = localStream;
     screenVideo.classList.remove('hidden');
     playerContainer.classList.add('hidden');
@@ -561,26 +505,12 @@ async function ensurePeer() {
   if (peer) return peer;
   peer = new RTCPeerConnection({
     iceServers: [
-      // 1. Обычные сервера Google (для домашних сетей)
       { urls: 'stun:stun.l.google.com:19302' },
       { urls: 'stun:stun1.l.google.com:19302' },
-      
-      // 2. Бесплатный TURN-сервер (для мобильного интернета и сложных сетей)
-      {
-        urls: [
-          "turn:openrelay.metered.ca:80",
-          "turn:openrelay.metered.ca:443",
-          "turn:openrelay.metered.ca:443?transport=tcp"
-        ],
-        username: "openrelayproject",
-        credential: "openrelayproject"
-      }
+      { urls: ["turn:openrelay.metered.ca:80", "turn:openrelay.metered.ca:443", "turn:openrelay.metered.ca:443?transport=tcp"], username: "openrelayproject", credential: "openrelayproject" }
     ]
   });
-  
-  peer.onicecandidate = (e) => {
-    if (e.candidate) socket.emit('rtc-ice', { candidate: e.candidate });
-  };
+  peer.onicecandidate = (e) => { if (e.candidate) socket.emit('rtc-ice', { candidate: e.candidate }); };
   peer.ontrack = (e) => {
     screenVideo.srcObject = e.streams[0];
     screenVideo.classList.remove('hidden');
