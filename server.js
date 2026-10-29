@@ -115,7 +115,7 @@ io.on('connection', (socket) => {
   socket.on('reaction', (emoji) => {
     const roomId = socket.data.roomId;
     if (!roomId) return;
-    const allowed = ['❤️', '😂', '😮', '😢', '👍', '🔥', '💀', '🎉', '😍', '🤯'];
+    const allowed = ['❤️', '😂', '😮', '💩', '😢', '👍', '🔥', '💀', '🎉', '😍', '🤯'];
     if (!allowed.includes(emoji)) return;
     io.to(roomId).emit('reaction', {
       emoji,
