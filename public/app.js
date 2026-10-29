@@ -561,10 +561,23 @@ async function ensurePeer() {
   if (peer) return peer;
   peer = new RTCPeerConnection({
     iceServers: [
+      // 1. Обычные сервера Google (для домашних сетей)
       { urls: 'stun:stun.l.google.com:19302' },
-      { urls: 'stun:stun1.l.google.com:19302' }
+      { urls: 'stun:stun1.l.google.com:19302' },
+      
+      // 2. Бесплатный TURN-сервер (для мобильного интернета и сложных сетей)
+      {
+        urls: [
+          "turn:openrelay.metered.ca:80",
+          "turn:openrelay.metered.ca:443",
+          "turn:openrelay.metered.ca:443?transport=tcp"
+        ],
+        username: "openrelayproject",
+        credential: "openrelayproject"
+      }
     ]
   });
+  
   peer.onicecandidate = (e) => {
     if (e.candidate) socket.emit('rtc-ice', { candidate: e.candidate });
   };
