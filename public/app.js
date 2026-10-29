@@ -419,19 +419,36 @@ function sendSync({ time, playing }) {
 }
 
 function applySync({ time, playing }) {
-  suppressSync = true;
+  // Если мы сами только что нажали кнопку — не дергаем видео
+  if (suppressSync) return; 
+  
+  suppressSync = true; // блокируем отправку события обратно на сервер
+  
   try {
     if (currentType === 'youtube' && ytPlayer && ytPlayer.seekTo) {
       if (typeof time === 'number') ytPlayer.seekTo(time, true);
-      playing ? ytPlayer.playVideo() : ytPlayer.pauseVideo();
+      if (playing) {
+        ytPlayer.playVideo();
+      } else {
+        ytPlayer.pauseVideo();
+      }
     } else if (currentType === 'vk') {
       applyVkSync({ time, playing });
     } else if (currentType === 'file' && fileVideoEl) {
       if (typeof time === 'number') fileVideoEl.currentTime = time;
-      playing ? fileVideoEl.play().catch(() => {}) : fileVideoEl.pause();
+      if (playing) {
+        // Если браузер блокирует автоплей, пробуем включить без звука (затем можно включить звук)
+        fileVideoEl.play().catch(() => {
+           fileVideoEl.muted = true;
+           fileVideoEl.play().then(() => { fileVideoEl.muted = false; }).catch(()=>{});
+        });
+      } else {
+        fileVideoEl.pause();
+      }
     }
   } finally {
-    setTimeout(() => { suppressSync = false; }, 250);
+    // Разблокируем отправку через полсекунды
+    setTimeout(() => { suppressSync = false; }, 500);
   }
 }
 
